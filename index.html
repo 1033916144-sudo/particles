@@ -1,0 +1,378 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover, maximum-scale=1.0">
+<title>粒子星云</title>
+<style>
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden;
+    background: #050510;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    touch-action: none; -webkit-user-select: none; user-select: none;
+  }
+  canvas { display: block; width: 100%; height: 100%; position: fixed; inset: 0; }
+  video { display: none; }
+
+  .ui-overlay {
+    position: fixed; inset: 0;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    z-index: 10;
+    pointer-events: none;
+  }
+
+  .start-btn {
+    pointer-events: auto;
+    padding: 16px 48px;
+    font-size: 20px; font-weight: 700;
+    border: none; border-radius: 16px;
+    background: linear-gradient(135deg, #4facfe, #a855f7);
+    color: #fff;
+    cursor: pointer;
+    box-shadow: 0 0 40px rgba(79, 172, 254, 0.3);
+    transition: transform 0.15s, box-shadow 0.15s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .start-btn:active { transform: scale(0.95); }
+
+  .status-text {
+    color: rgba(255,255,255,0.6);
+    font-size: 14px;
+    margin-top: 16px;
+    text-align: center;
+    line-height: 1.5;
+    opacity: 0;
+    transition: opacity 0.5s;
+  }
+  .status-text.show { opacity: 1; }
+
+  .info-bar {
+    position: fixed;
+    bottom: 24px; left: 50%;
+    transform: translateX(-50%);
+    color: rgba(255,255,255,0.25);
+    font-size: 13px;
+    z-index: 10;
+    text-align: center;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.8s;
+  }
+
+  .loading-bar {
+    position: fixed; top: 0; left: 0; height: 3px;
+    background: linear-gradient(90deg, #4facfe, #a855f7, #f472b6);
+    z-index: 20;
+    width: 0%;
+    transition: width 0.3s, opacity 0.5s;
+    border-radius: 0 2px 2px 0;
+  }
+
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<canvas id="canvas"></canvas>
+<video id="video" playsinline></video>
+<div class="loading-bar" id="loadingBar"></div>
+
+<div class="ui-overlay" id="overlay">
+  <button class="start-btn" id="startBtn">&#x5F00;&#x59CB;&#x4F53;&#x9A8C;</button>
+  <div class="status-text" id="status">&#x70B9;&#x51FB;&#x4E0A;&#x65B9;&#x6309;&#x94AE;&#x5F00;&#x542F;&#x6444;&#x50CF;&#x5934;</div>
+</div>
+
+<div class="info-bar" id="infoBar">&#x4F38;&#x51FA;&#x624B;&#x638C;&#x63A7;&#x5236;&#x7C92;&#x5B50;&#x7F29;&#x653E; &#xB7; &#x9760;&#x8FD1;&#x653E;&#x5927; &#xB7; &#x8FDC;&#x79BB;&#x7F29;&#x5C0F;</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+<script>
+(function(){
+  'use strict';
+
+  var canvas = document.getElementById('canvas');
+  var ctx = canvas.getContext('2d');
+  var video = document.getElementById('video');
+  var overlay = document.getElementById('overlay');
+  var startBtn = document.getElementById('startBtn');
+  var statusEl = document.getElementById('status');
+  var infoBar = document.getElementById('infoBar');
+  var loadingBar = document.getElementById('loadingBar');
+
+  // ---- config ----
+  var PARTICLE_COUNT = 600;
+  var WORLD_SIZE = 2000;
+  var DEFAULT_ZOOM = 1.2;
+  var ZOOM_MIN = 0.3;
+  var ZOOM_MAX = 3.5;
+  var LERP_ACTIVE = 0.12;
+  var LERP_IDLE = 0.04;
+  var HAND_TIMEOUT = 1500;
+
+  // ---- state ----
+  var particles = [];
+  var currentZoom = DEFAULT_ZOOM;
+  var targetZoom = DEFAULT_ZOOM;
+  var lastHandTime = 0;
+  var handActive = false;
+  var handX = 0.5, handY = 0.5;
+  var modelLoaded = false;
+  var cameraStarted = false;
+  var started = false;
+  var inferenceId = null;
+
+  // ---- particles ----
+  function generateParticles() {
+    for (var i = 0; i < PARTICLE_COUNT; i++) {
+      var angle = Math.random() * Math.PI * 2;
+      var dist = Math.pow(Math.random(), 0.6) * WORLD_SIZE * 0.45;
+      var x = Math.cos(angle) * dist;
+      var y = Math.sin(angle) * dist;
+      if (i > PARTICLE_COUNT * 0.85) {
+        var a2 = Math.random() * Math.PI * 2;
+        var d2 = WORLD_SIZE * (0.45 + Math.random() * 0.4);
+        x = Math.cos(a2) * d2;
+        y = Math.sin(a2) * d2;
+      }
+      var t = i / PARTICLE_COUNT;
+      var hue = 220 - t * 100;
+      var sat = 70 + t * 25;
+      var lit = 55 + t * 20;
+      var baseR = 1 + Math.random() * 4;
+      particles.push({ x: x, y: y, baseRadius: baseR, hue: hue, sat: sat, lit: lit });
+    }
+  }
+  generateParticles();
+
+  // ---- resize ----
+  var W, H, dpr;
+  function resize() {
+    dpr = window.devicePixelRatio || 1;
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = W * dpr;
+    canvas.height = H * dpr;
+    canvas.style.width = W + 'px';
+    canvas.style.height = H + 'px';
+    ctx.scale(dpr, dpr);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // ---- render loop ----
+  function render() {
+    ctx.clearRect(0, 0, W, H);
+
+    // background glow
+    var bgGrad = ctx.createRadialGradient(W/2, H/2, 0, W/2, H/2, Math.max(W, H) * 0.7);
+    bgGrad.addColorStop(0, '#0a0a2e');
+    bgGrad.addColorStop(0.5, '#060618');
+    bgGrad.addColorStop(1, '#020208');
+    ctx.fillStyle = bgGrad;
+    ctx.fillRect(0, 0, W, H);
+
+    // nebula drift
+    var nebX = W * (0.3 + handX * 0.4);
+    var nebY = H * (0.3 + handY * 0.4);
+    var nebGrad = ctx.createRadialGradient(nebX, nebY, 0, nebX, nebY, Math.max(W, H) * 0.5);
+    nebGrad.addColorStop(0, 'rgba(79, 172, 254, 0.04)');
+    nebGrad.addColorStop(0.5, 'rgba(168, 85, 247, 0.02)');
+    nebGrad.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = nebGrad;
+    ctx.fillRect(0, 0, W, H);
+
+    var zoom = currentZoom;
+    var vw = W / zoom;
+    var vh = H / zoom;
+    var panX = (handX - 0.5) * vw * 0.08;
+    var panY = (handY - 0.5) * vh * 0.08;
+
+    ctx.save();
+    ctx.translate(W / 2 + panX, H / 2 + panY);
+    ctx.scale(zoom, zoom);
+
+    var left = -vw / 2;
+    var right = vw / 2;
+    var top = -vh / 2;
+    var bottom = vh / 2;
+
+    for (var i = 0; i < particles.length; i++) {
+      var p = particles[i];
+      if (p.x < left || p.x > right || p.y < top || p.y > bottom) continue;
+
+      var r = p.baseRadius * 0.7;
+      var glowR = r * 3;
+      var h = p.hue + (handY - 0.5) * 20;
+      var s = p.sat;
+      var l = p.lit;
+      var alpha = 0.5 + (p.baseRadius / 5) * 0.5;
+
+      // glow layer
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, glowR, 0, Math.PI * 2);
+      ctx.fillStyle = 'hsla(' + h + ', ' + s + '%, ' + l + '%, 0.12)';
+      ctx.fill();
+
+      // core layer
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+      ctx.fillStyle = 'hsla(' + h + ', ' + Math.min(100, s + 10) + '%, ' + Math.min(85, l + 15) + '%, ' + alpha + ')';
+      ctx.fill();
+    }
+
+    ctx.restore();
+
+    // vignette
+    var vigGrad = ctx.createRadialGradient(W/2, H/2, W*0.25, W/2, H/2, Math.max(W, H) * 0.7);
+    vigGrad.addColorStop(0, 'rgba(0,0,0,0)');
+    vigGrad.addColorStop(1, 'rgba(0,0,0,0.4)');
+    ctx.fillStyle = vigGrad;
+    ctx.fillRect(0, 0, W, H);
+
+    requestAnimationFrame(render);
+  }
+
+  // ---- update loop ----
+  function updateZoom() {
+    var now = Date.now();
+    if (handActive && now - lastHandTime > HAND_TIMEOUT) {
+      handActive = false;
+    }
+    var speed = handActive ? LERP_ACTIVE : LERP_IDLE;
+    currentZoom += (targetZoom - currentZoom) * speed;
+    if (!handActive && Math.abs(currentZoom - DEFAULT_ZOOM) < 0.005) {
+      currentZoom = DEFAULT_ZOOM;
+      targetZoom = DEFAULT_ZOOM;
+    }
+  }
+
+  // ---- hand tracking ----
+  var handsInstance = null;
+
+  function initHandTracking() {
+    handsInstance = new Hands({
+      locateFile: function(file) {
+        return 'https://cdn.jsdelivr.net/npm/@mediapipe/hands/' + file;
+      }
+    });
+
+    handsInstance.setOptions({
+      maxNumHands: 1,
+      modelComplexity: 1,
+      minDetectionConfidence: 0.6,
+      minTrackingConfidence: 0.5
+    });
+
+    handsInstance.onResults(function(results) {
+      if (!modelLoaded) {
+        modelLoaded = true;
+        onModelReady();
+      }
+      if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+        var lm = results.multiHandLandmarks[0];
+        handActive = true;
+        lastHandTime = Date.now();
+
+        handX = lm[9].x;
+        handY = lm[9].y;
+
+        var wrist = lm[0];
+        var midTip = lm[12];
+        var dx = wrist.x - midTip.x;
+        var dy = wrist.y - midTip.y;
+        var handDist = Math.sqrt(dx * dx + dy * dy);
+
+        var norm = Math.max(0, Math.min(1, (handDist - 0.08) / 0.4));
+        targetZoom = ZOOM_MIN + (ZOOM_MAX - ZOOM_MIN) * norm;
+      }
+    });
+  }
+
+  function onModelReady() {
+    loadingBar.style.width = '80%';
+    statusEl.textContent = '\u6A21\u578B\u5DF2\u52A0\u8F7D\uFF0C\u6B63\u5728\u542F\u52A8\u6444\u50CF\u5934\u2026';
+  }
+
+  // ---- inference loop ----
+  function inferenceLoop() {
+    if (!cameraStarted) return;
+    try {
+      handsInstance.send({ image: video });
+    } catch (e) {}
+    inferenceId = requestAnimationFrame(inferenceLoop);
+  }
+
+  // ---- start ----
+  startBtn.addEventListener('click', async function() {
+    if (started) return;
+    started = true;
+    startBtn.textContent = '\u52A0\u8F7D\u4E2D\u2026';
+    startBtn.style.pointerEvents = 'none';
+    statusEl.textContent = '\u6B63\u5728\u52A0\u8F7D\u624B\u90E8\u8BC6\u522B\u6A21\u578B\uFF08\u9996\u6B21\u7EA7 10MB\uFF09\u2026';
+    statusEl.classList.add('show');
+    loadingBar.style.width = '5%';
+
+    initHandTracking();
+    loadingBar.style.width = '15%';
+
+    try {
+      var stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'user', width: { ideal: 480 }, height: { ideal: 360 } }
+      });
+      video.srcObject = stream;
+      await video.play();
+      cameraStarted = true;
+      loadingBar.style.width = '40%';
+      statusEl.textContent = '\u6444\u50CF\u5934\u5DF2\u5F00\u542F\uFF0C\u6B63\u5728\u52A0\u8F7D\u624B\u90E8\u8BC6\u522B\u2026';
+
+      inferenceLoop();
+
+      var waitCount = 0;
+      var waitCheck = setInterval(function() {
+        waitCount++;
+        if (modelLoaded) {
+          clearInterval(waitCheck);
+          loadingBar.style.width = '100%';
+          statusEl.textContent = '\u5C31\u7EEA\uFF01\u4F38\u51FA\u624B\u6765\u63A7\u5236\u7C92\u5B50';
+          overlay.classList.add('hidden');
+          infoBar.style.opacity = '1';
+          setTimeout(function() { loadingBar.style.opacity = '0'; }, 800);
+        } else if (waitCount > 60) {
+          clearInterval(waitCheck);
+          statusEl.textContent = '\u52A0\u8F7D\u8D85\u65F6\uFF0C\u8BF7\u68C0\u67E5\u7F51\u7EDC\u540E\u91CD\u8BD5';
+          startBtn.textContent = '\u91CD\u8BD5';
+          startBtn.style.pointerEvents = 'auto';
+          loadingBar.style.width = '0%';
+          started = false;
+        }
+      }, 500);
+
+    } catch (err) {
+      console.error(err);
+      var msg;
+      if (err.name === 'NotAllowedError') {
+        msg = '\u6444\u50CF\u5934\u6743\u9650\u88AB\u62D2\u7EDD\uFF0C\u8BF7\u5728\u6D4F\u89C8\u5668\u8BBE\u7F6E\u4E2D\u5141\u8BB8';
+      } else if (err.name === 'NotFoundError') {
+        msg = '\u672A\u627E\u5230\u6444\u50CF\u5934\u8BBE\u5907';
+      } else {
+        msg = '\u542F\u52A8\u5931\u8D25: ' + err.message;
+      }
+      statusEl.textContent = msg;
+      startBtn.textContent = '\u91CD\u8BD5';
+      startBtn.style.pointerEvents = 'auto';
+      loadingBar.style.width = '0%';
+      started = false;
+    }
+  });
+
+  // ---- kick off ----
+  setInterval(updateZoom, 16);
+  render();
+})();
+</script>
+</body>
+</html>
