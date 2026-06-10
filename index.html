@@ -253,7 +253,7 @@
   // ---- hand tracking ----
   var handsInstance = null;
 
-  function initHandTracking() {
+  function createHands() {
     handsInstance = new Hands({
       locateFile: function(file) {
         return 'https://cdn.jsdelivr.net/npm/@mediapipe/hands/' + file;
@@ -268,10 +268,6 @@
     });
 
     handsInstance.onResults(function(results) {
-      if (!modelLoaded) {
-        modelLoaded = true;
-        onModelReady();
-      }
       if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
         var lm = results.multiHandLandmarks[0];
         handActive = true;
@@ -292,18 +288,21 @@
     });
   }
 
-  function onModelReady() {
-    loadingBar.style.width = '80%';
-    statusEl.textContent = '\u6A21\u578B\u5DF2\u52A0\u8F7D\uFF0C\u6B63\u5728\u542F\u52A8\u6444\u50CF\u5934\u2026';
-  }
+  // ---- inference loop (only called after model is initialized) ----
+  var inferenceRunning = false;
 
-  // ---- inference loop ----
-  function inferenceLoop() {
-    if (!cameraStarted) return;
-    try {
-      handsInstance.send({ image: video });
-    } catch (e) {}
-    inferenceId = requestAnimationFrame(inferenceLoop);
+  async function inferenceLoop() {
+    if (!inferenceRunning) return;
+    if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+      try {
+        await handsInstance.send({ image: video });
+      } catch (e) {
+        // MediaPipe may still be initializing on first call
+      }
+    }
+    if (inferenceRunning) {
+      requestAnimationFrame(inferenceLoop);
+    }
   }
 
   // ---- start ----
@@ -312,44 +311,52 @@
     started = true;
     startBtn.textContent = '\u52A0\u8F7D\u4E2D\u2026';
     startBtn.style.pointerEvents = 'none';
-    statusEl.textContent = '\u6B63\u5728\u52A0\u8F7D\u624B\u90E8\u8BC6\u522B\u6A21\u578B\uFF08\u9996\u6B21\u7EA7 10MB\uFF09\u2026';
+    statusEl.textContent = '\u6B63\u5728\u52A0\u8F7D\u624B\u90E8\u8BC6\u522B\u6A21\u578B\u2026';
     statusEl.classList.add('show');
     loadingBar.style.width = '5%';
 
-    initHandTracking();
-    loadingBar.style.width = '15%';
+    createHands();
+    loadingBar.style.width = '10%';
 
     try {
+      // Step 1: Initialize model FIRST (downloads ~10MB)
+      statusEl.textContent = '\u6B63\u5728\u52A0\u8F7D\u624B\u90E8\u8BC6\u522B\u6A21\u578B\uFF08\u9996\u6B21\u7EA6 10MB\uFF0C\u8BF7\u7A0D\u5019\uFF09\u2026';
+      var initPromise = handsInstance.initialize();
+
+      // Update loading bar while model loads
+      var loadingProgress = setInterval(function() {
+        var current = parseInt(loadingBar.style.width) || 10;
+        if (current < 60) {
+          loadingBar.style.width = Math.min(60, current + 1) + '%';
+        }
+      }, 300);
+
+      await initPromise;
+      clearInterval(loadingProgress);
+      loadingBar.style.width = '60%';
+      statusEl.textContent = '\u6A21\u578B\u5DF2\u52A0\u8F7D\uFF0C\u6B63\u5728\u542F\u52A8\u6444\u50CF\u5934\u2026';
+
+      // Step 2: Start camera
       var stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'user', width: { ideal: 480 }, height: { ideal: 360 } }
+        video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } }
       });
       video.srcObject = stream;
       await video.play();
-      cameraStarted = true;
-      loadingBar.style.width = '40%';
-      statusEl.textContent = '\u6444\u50CF\u5934\u5DF2\u5F00\u542F\uFF0C\u6B63\u5728\u52A0\u8F7D\u624B\u90E8\u8BC6\u522B\u2026';
+      loadingBar.style.width = '80%';
+      statusEl.textContent = '\u6444\u50CF\u5934\u5DF2\u5F00\u542F\uFF01';
 
+      // Step 3: Start inference
+      inferenceRunning = true;
       inferenceLoop();
 
-      var waitCount = 0;
-      var waitCheck = setInterval(function() {
-        waitCount++;
-        if (modelLoaded) {
-          clearInterval(waitCheck);
-          loadingBar.style.width = '100%';
-          statusEl.textContent = '\u5C31\u7EEA\uFF01\u4F38\u51FA\u624B\u6765\u63A7\u5236\u7C92\u5B50';
-          overlay.classList.add('hidden');
-          infoBar.style.opacity = '1';
-          setTimeout(function() { loadingBar.style.opacity = '0'; }, 800);
-        } else if (waitCount > 60) {
-          clearInterval(waitCheck);
-          statusEl.textContent = '\u52A0\u8F7D\u8D85\u65F6\uFF0C\u8BF7\u68C0\u67E5\u7F51\u7EDC\u540E\u91CD\u8BD5';
-          startBtn.textContent = '\u91CD\u8BD5';
-          startBtn.style.pointerEvents = 'auto';
-          loadingBar.style.width = '0%';
-          started = false;
-        }
-      }, 500);
+      // Step 4: Wait briefly then show ready
+      setTimeout(function() {
+        loadingBar.style.width = '100%';
+        statusEl.textContent = '\u5C31\u7EEA\uFF01\u4F38\u51FA\u624B\u6765\u63A7\u5236\u7C92\u5B50';
+        overlay.classList.add('hidden');
+        infoBar.style.opacity = '1';
+        setTimeout(function() { loadingBar.style.opacity = '0'; }, 800);
+      }, 1500);
 
     } catch (err) {
       console.error(err);
@@ -358,8 +365,10 @@
         msg = '\u6444\u50CF\u5934\u6743\u9650\u88AB\u62D2\u7EDD\uFF0C\u8BF7\u5728\u6D4F\u89C8\u5668\u8BBE\u7F6E\u4E2D\u5141\u8BB8';
       } else if (err.name === 'NotFoundError') {
         msg = '\u672A\u627E\u5230\u6444\u50CF\u5934\u8BBE\u5907';
-      } else {
+      } else if (err.message && err.message.indexOf('model') === -1) {
         msg = '\u542F\u52A8\u5931\u8D25: ' + err.message;
+      } else {
+        msg = '\u6A21\u578B\u52A0\u8F7D\u5931\u8D25\uFF0C\u8BF7\u68C0\u67E5\u7F51\u7EDC\u540E\u91CD\u8BD5';
       }
       statusEl.textContent = msg;
       startBtn.textContent = '\u91CD\u8BD5';
